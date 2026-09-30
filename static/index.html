@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GitScope</title>
+<style>
+:root{--bg:#f4f5f2;--pn:#fff;--bd:#d9dcd3;--tx:#1d2320;--mu:#68706a;--ac:#1f7a5c;--rd:#e5484d;--mono:ui-monospace,Consolas,Menlo,monospace}
+@media(prefers-color-scheme:dark){:root{--bg:#131715;--pn:#1b211e;--bd:#2d3630;--tx:#e4e9e5;--mu:#8f9b93;--ac:#3ecf9a}}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,sans-serif}
+input,select,textarea,button{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--bd);border-radius:5px;padding:6px 10px}
+button{cursor:pointer}button:hover,button:focus-visible{border-color:var(--ac);outline:none}
+button.p{background:var(--ac);border-color:var(--ac);color:#fff}button.d{background:var(--rd);border-color:var(--rd);color:#fff}
+.bar{display:flex;gap:8px;align-items:center;padding:8px 12px;background:var(--pn);border-bottom:1px solid var(--bd);flex-wrap:wrap}
+#path{flex:1;min-width:200px;font-family:var(--mono)}
+main{flex:1;display:flex;min-height:0}
+#tree{width:300px;overflow:auto;padding:8px;background:var(--pn);border-right:1px solid var(--bd);font-size:13px}
+#tree details{margin-left:14px}#tree summary,.f{cursor:pointer;padding:2px 4px;border-radius:4px;white-space:nowrap}
+.f{margin-left:14px}.f:hover,summary:hover{background:var(--bg)}.f.sel{outline:1px solid var(--ac)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--rd);margin-right:6px}
+#right{flex:1;display:flex;flex-direction:column;min-width:0}
+#work{flex:1;display:flex;min-height:0}
+.pane{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--bd)}
+.pane .bar{padding:6px 10px}.pane h4{margin:0;font-size:16px}
+.ed{position:relative;flex:1;min-height:0;background:var(--bg)}
+.bd{position:absolute;inset:0;overflow:hidden;pointer-events:none}.in{padding:8px 0}
+.in div{height:20px}.in .y{background:rgba(255,205,0,.3)}
+.ed textarea{position:absolute;inset:0;width:100%;height:100%;background:transparent;border:0;border-radius:0;resize:none;padding:8px;font:13px/20px var(--mono);white-space:pre;overflow:auto;tab-size:4}
+#hunks{max-height:170px;overflow:auto;background:var(--pn);border-top:1px solid var(--bd)}
+.h{display:flex;gap:8px;align-items:center;padding:4px 12px;border-bottom:1px solid var(--bd);cursor:pointer}
+.h code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.empty{margin:auto;color:var(--mu);text-align:center;padding:24px;max-width:360px}
+dialog{width:min(760px,94vw);max-height:88vh;overflow:auto;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:0}
+dialog::backdrop{background:#0008}dialog section{padding:14px 18px;border-bottom:1px solid var(--bd)}
+dialog h3{margin:0 0 8px;font-size:15px}pre{margin:0;font:12px/1.5 var(--mono);white-space:pre-wrap;color:var(--mu)}
+table{width:100%;border-collapse:collapse}td{padding:4px 6px;border-bottom:1px solid var(--bd);vertical-align:top}
+.mu{color:var(--mu)}#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:8px 14px;border-radius:6px;display:none;max-width:90vw}
+@media(max-width:800px){main,#work{flex-direction:column}#tree{width:auto;max-height:35vh}}
+</style></head><body>
+<div class="bar">
+  <b>GitScope</b>
+  <input id="path" placeholder="Paste your git repo folder path, e.g. C:\code\myrepo">
+  <button class="p" id="open">Open</button>
+  <button id="infoBtn" disabled>ⓘ Info</button>
+  <button id="pinBtn" disabled>📌 Pinned files (0)</button>
+</div>
+<div class="bar" id="rows" hidden>
+  <b>View</b> <select id="A"></select> <span class="mu">vs</span> <select id="B"></select>
+  <button class="p" id="go">Compare</button>
+  <span class="mu"><i class="dot"></i>different · yellow lines differ</span>
+</div>
+<div class="bar" id="mrg" hidden>
+  <b>Hard merge</b> <select id="S"></select> <b>→</b> <select id="T"></select>
+  <span class="mu" id="cap"></span>
+  <label><input type="checkbox" id="rs" checked> Restore pinned files after</label>
+  <button class="d" id="hm">Hard merge</button>
+  <button id="rp" title="Put the target branch's pinned files back from the latest backup">Restore pinned files</button>
+</div>
+<main>
+  <div id="tree"><div class="empty">Open a repo to see its files.</div></div>
+  <div id="right"><div id="work"><div class="empty">Pick a file. With two different branches selected, both open side by side and differing lines turn yellow.</div></div><div id="hunks" hidden></div></div>
+</main>
+<dialog id="dlg"></dialog><div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const S={repo:"",info:null,a:"",b:"",files:[],sel:""};let P=[],H=[];
+$("#path").value=localStorage.repo||"";
+function toast(m,err){const t=$("#toast");t.textContent=m;t.style.background=err?"var(--rd)":"";t.style.color=err?"#fff":"";t.style.display="block";clearTimeout(t.h);t.h=setTimeout(()=>t.style.display="none",err?6000:2500)}
+async function api(u,body){
+  const url=body?"/api/"+u:"/api/"+u+(u.includes("?")?"&":"?")+"repo="+encodeURIComponent(S.repo);
+  const r=await fetch(url,body?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo:S.repo,...body})}:undefined);
+  const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.detail||r.statusText);return j}
+const run=async f=>{try{return await f()}catch(e){toast(e.message,1)}};
+function box(html,btns){return new Promise(res=>{const d=$("#dlg");d.innerHTML=`<section>${html}</section><section>${btns.map((b,i)=>`<button data-i="${i}" class="${b.c||""}">${b.t}</button>`).join(" ")}</section>`;
+  d.querySelectorAll("[data-i]").forEach(b=>b.onclick=()=>{d.close();res(btns[b.dataset.i].v)});d.oncancel=()=>res(false);if(!d.open)d.showModal()})}
+const list=a=>a.length?"<ul>"+a.map(x=>`<li><code>${esc(x)}</code></li>`).join("")+"</ul>":"";
+const pinCount=()=>Object.values(S.info.pins).reduce((n,a)=>n+a.length,0);
+
+async function load(keep){
+  S.info=await api("info");const i=S.info,all=[...i.local,...i.remote];
+  const opts=all.map(b=>`<option>${esc(b)}</option>`).join("");
+  ["A","B","S","T"].forEach(k=>$("#"+k).innerHTML=opts);
+  if(!keep){S.a=i.branch||all[0];S.b=i.remote.includes("origin/"+i.branch)?"origin/"+i.branch:S.a;
+    $("#S").value=S.b!=S.a?S.b:S.a;$("#T").value=i.branch||all[0]}
+  $("#A").value=S.a;$("#B").value=S.b;
+  $("#rows").hidden=$("#mrg").hidden=false;$("#infoBtn").disabled=$("#pinBtn").disabled=false;
+  $("#pinBtn").textContent=`📌 Pinned files (${pinCount()})`;caption();await tree();
+}
+const caption=()=>$("#cap").textContent=`${$("#T").value} will become exactly like ${$("#S").value}`;
+$("#S").onchange=$("#T").onchange=caption;
+async function tree(){
+  S.files=(await api(`compare?a=${encodeURIComponent(S.a)}&b=${encodeURIComponent(S.b)}`)).files;
+  const root={c:{}};
+  for(const f of S.files){let n=root;f.path.split("/").forEach(s=>{n=n.c[s]??={c:{},name:s,d:false};if(f.status!="same")n.d=true});n.f=f}
+  const el=$("#tree");el.innerHTML=S.files.length?"":'<div class="empty">No files on this branch.</div>';
+  (function draw(n,into){
+    Object.values(n.c).sort((x,y)=>(!!x.f-!!y.f)||x.name.localeCompare(y.name)).forEach(ch=>{
+      const dot=ch.d?'<i class="dot"></i>':"";
+      if(ch.f){const d=document.createElement("div");d.className="f"+(ch.f.path==S.sel?" sel":"");d.innerHTML=dot+esc(ch.name);
+        d.onclick=()=>run(()=>openFile(ch.f.path));into.append(d)}
+      else{const d=document.createElement("details");d.open=ch.d;d.innerHTML=`<summary>${dot}${esc(ch.name)}/</summary>`;draw(ch,d);into.append(d)}
+    })})(root,el);
+}
+
+/* ---------- line diff ---------- */
+const lines=t=>t.split("\n");
+function diffOps(a,b){
+  let s=0;while(s<a.length&&s<b.length&&a[s]===b[s])s++;
+  let ea=a.length,eb=b.length;while(ea>s&&eb>s&&a[ea-1]===b[eb-1]){ea--;eb--}
+  const n=ea-s,m=eb-s;if(!n&&!m)return[];
+  if(!n||!m||n*m>4e6)return[{as:s,ae:ea,bs:s,be:eb}];
+  const w=m+1,t=new Uint16Array((n+1)*w);
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)t[i*w+j]=a[s+i]===b[s+j]?t[(i+1)*w+j+1]+1:Math.max(t[(i+1)*w+j],t[i*w+j+1]);
+  const out=[];let i=0,j=0,c=null;
+  while(i<n||j<m){
+    if(i<n&&j<m&&a[s+i]===b[s+j]){if(c){out.push(c);c=null}i++;j++;continue}
+    c??={as:s+i,ae:s+i,bs:s+j,be:s+j};
+    if(j>=m||(i<n&&t[(i+1)*w+j]>=t[i*w+j+1])){i++;c.ae=s+i}else{j++;c.be=s+j}}
+  if(c)out.push(c);return out}
+
+/* ---------- editors ---------- */
+async function openFile(path){
+  S.sel=path;document.querySelectorAll(".f").forEach(x=>x.classList.remove("sel"));
+  const refs=S.a==S.b?[S.a]:[S.a,S.b];
+  const data=await Promise.all(refs.map(r=>api(`file?ref=${encodeURIComponent(r)}&path=${encodeURIComponent(path)}`)));
+  const w=$("#work");w.innerHTML="";P=[];refs.forEach((r,i)=>{const p=pane(r,path,data[i]);P.push(p);w.append(p.el)});refresh();
+}
+function pane(ref,path,d){
+  const local=S.info.local.includes(ref),el=document.createElement("div");el.className="pane";
+  const pinned=()=>(S.info.pins[ref]||[]).includes(path);
+  el.innerHTML=`<div class="bar"><h4>${esc(ref)}</h4><span class="mu" style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(path)}${d.exists?"":" · not on this branch"}${local?"":" · read-only"}</span><button data-k="pin"></button></div>
+   <div class="ed"><div class="bd"><div class="in"></div></div><textarea spellcheck="false" ${d.binary?"disabled":""}></textarea></div>
+   <div class="bar"><input style="flex:1" value="Update ${esc(path.split('/').pop())}"><button class="p" data-k="c" ${local&&!d.binary?"":"disabled"}>Commit to ${esc(ref)}</button></div>`;
+  const ta=el.querySelector("textarea"),inn=el.querySelector(".in"),btn=el.querySelector("[data-k=pin]");
+  ta.value=d.binary?"(binary file)":d.content;
+  ta.onscroll=()=>inn.style.transform=`translate(${-ta.scrollLeft}px,${-ta.scrollTop}px)`;
+  let h;ta.oninput=()=>{clearTimeout(h);h=setTimeout(refresh,150)};
+  const paint=()=>{btn.textContent=pinned()?"★ Pinned":"☆ Pin";btn.title=`Pin keeps this file safe on ${ref} during hard merges`};paint();
+  btn.onclick=()=>run(async()=>{S.info.pins=(await api("pin",{branch:ref,path,pinned:!pinned()})).pins;paint();$("#pinBtn").textContent=`📌 Pinned files (${pinCount()})`});
+  el.querySelector("[data-k=c]").onclick=()=>run(async()=>{await api("commit",{branch:ref,path,content:ta.value,message:el.querySelector("input").value});
+    toast("Committed to "+ref);await load(true);await openFile(path)});
+  return{el,ref,ta,inn}}
+function mark(p,set){const n=lines(p.ta.value).length;
+  p.inn.innerHTML=Array.from({length:n},(_,i)=>`<div${set.has(i)?' class="y"':''}></div>`).join("");
+  p.inn.style.width=Math.max(p.ta.scrollWidth,p.ta.clientWidth)+"px"}
+function refresh(){
+  const box=$("#hunks");
+  if(P.length<2){P.forEach(p=>mark(p,new Set()));box.hidden=true;return}
+  const[x,y]=P,a=lines(x.ta.value),b=lines(y.ta.value);H=diffOps(a,b);
+  const sa=new Set(),sb=new Set();
+  H.forEach(h=>{for(let i=h.as;i<h.ae;i++)sa.add(i);for(let i=h.bs;i<h.be;i++)sb.add(i)});
+  mark(x,sa);mark(y,sb);box.hidden=false;
+  const pv=(l,s,e)=>esc(l.slice(s,e).join(" ⏎ ").slice(0,70)||"(nothing)");
+  box.innerHTML=H.length?`<div class="bar"><b>${H.length} difference${H.length>1?"s":""} to resolve</b>
+    <button data-all="lr">Copy all ${esc(x.ref)} → ${esc(y.ref)}</button><button data-all="rl">Copy all ${esc(y.ref)} → ${esc(x.ref)}</button></div>`+
+    H.map((h,k)=>`<div class="h" data-k="${k}"><span class="mu">L${h.as+1}</span><code>${pv(a,h.as,h.ae)}</code><code>${pv(b,h.bs,h.be)}</code>
+      <button data-lr>Use ${esc(x.ref)} →</button><button data-rl>← Use ${esc(y.ref)}</button></div>`).join("")
+    :'<div class="bar">No differences. Both sides match.</div>'}
+$("#hunks").onclick=e=>{
+  const[x,y]=P,b=e.target.closest("button"),row=e.target.closest(".h");
+  if(b?.dataset.all){(b.dataset.all=="lr"?y:x).ta.value=(b.dataset.all=="lr"?x:y).ta.value;return refresh()}
+  if(!row)return;const h=H[row.dataset.k];
+  if(b){const a=lines(x.ta.value),c=lines(y.ta.value);
+    if("lr" in b.dataset)c.splice(h.bs,h.be-h.bs,...a.slice(h.as,h.ae));else a.splice(h.as,h.ae-h.as,...c.slice(h.bs,h.be));
+    x.ta.value=a.join("\n");y.ta.value=c.join("\n");return refresh()}
+  x.ta.scrollTop=Math.max(0,h.as*20-40);y.ta.scrollTop=Math.max(0,h.bs*20-40)};
+
+/* ---------- top bar actions ---------- */
+$("#open").onclick=()=>run(async()=>{S.repo=$("#path").value.trim();S.sel="";await load();localStorage.repo=S.repo;
+  $("#work").innerHTML='<div class="empty">Pick a file.</div>';$("#hunks").hidden=true});
+$("#path").addEventListener("keydown",e=>{if(e.key==="Enter")$("#open").click()});
+$("#go").onclick=()=>run(async()=>{S.a=$("#A").value;S.b=$("#B").value;$("#S").value=S.a;$("#T").value=S.b;caption();await tree();
+  $("#work").innerHTML='<div class="empty">Click a file marked with a red dot to compare it.</div>';$("#hunks").hidden=true});
+
+$("#hm").onclick=()=>run(async()=>{
+  const s=$("#S").value,t=$("#T").value,rs=$("#rs").checked;
+  if(s===t)return toast("Pick two different branches.",1);
+  if(!S.info.local.includes(t))return toast("The target must be a local branch.",1);
+  const p=await api("prepare",{target:t});
+  const ok=await box(`<h3>Step 1: pinned files backed up</h3>${p.files.length?`<p>${p.files.length} pinned file(s) on <b>${esc(t)}</b> are saved:</p>${list(p.files)}`:`<p class="mu">No files are pinned on <b>${esc(t)}</b>, so nothing needed backing up.</p>`}
+    <h3>Step 2: hard merge</h3><p><b>${esc(t)}</b> will become <b>exactly</b> like <b>${esc(s)}</b>. Files that exist only on ${esc(t)} disappear${p.files.length?(rs?", except your pinned files, which are restored afterwards":", and pinned files are NOT restored (box is unticked)"):""}.</p>`,
+    [{t:"Cancel",v:false},{t:`Hard merge ${esc(s)} → ${esc(t)}`,c:"d",v:true}]);
+  if(!ok)return;
+  const r=await api("hardmerge",{source:s,target:t,backup_id:p.id,restore:rs});
+  await load(true);
+  await box(`<h3>Hard merge complete</h3><p><b>${esc(t)}</b> now matches <b>${esc(s)}</b>.</p>${r.restored.length?`<p>Restored pinned files:</p>${list(r.restored)}`:(p.files.length&&rs?'<p class="mu">Pinned files already matched, nothing to restore.</p>':"")}
+    <p class="mu">Previous ${esc(t)} commit: <code>${esc(r.old.slice(0,10))}</code>. Undo with <code>git branch -f ${esc(t)} ${esc(r.old.slice(0,10))}</code></p>`,[{t:"Done",c:"p",v:true}]);
+  if(S.sel)openFile(S.sel)});
+$("#rp").onclick=()=>run(async()=>{const t=$("#T").value;const r=await api("restore_pins",{branch:t});
+  await load(true);await box(r.restored.length?`<h3>Restored on ${esc(t)}</h3>${list(r.restored)}`:`<p>Pinned files on <b>${esc(t)}</b> already match the latest backup.</p>`,[{t:"OK",c:"p",v:true}])});
+
+/* ---------- panels ---------- */
+$("#pinBtn").onclick=()=>run(async()=>{await load(true);const bk=await api("backups"),pins=S.info.pins,d=$("#dlg");
+  d.innerHTML=`<section><h3>Pinned files</h3><p class="mu">A pin belongs to one branch and one path. Pinned files are backed up before every hard merge into that branch.</p>
+   ${Object.keys(pins).length?Object.entries(pins).map(([b,a])=>`<p><b>${esc(b)}</b></p><table>${a.map(p=>`<tr><td><code>${esc(p)}</code></td><td style="text-align:right"><button data-ub="${esc(b)}" data-up="${esc(p)}">Unpin</button></td></tr>`).join("")}</table>`).join(""):'<span class="mu">Nothing pinned yet. Open a file and click ☆ Pin above its editor.</span>'}</section>
+   <section><h3>Backups</h3>${bk.length?`<table>${bk.map(b=>`<tr><td><b>${esc(b.branch)}</b> <span class="mu">${esc(b.time)}</span><div class="mu">${b.files.map(esc).join(", ")||"(empty)"}</div></td><td style="text-align:right">${S.info.local.includes(b.branch)&&b.files.length?`<button data-rb="${esc(b.id)}" data-br="${esc(b.branch)}">Restore to ${esc(b.branch)}</button>`:""}</td></tr>`).join("")}</table>`:'<span class="mu">No backups yet. One is created automatically at each hard merge.</span>'}</section>
+   <section><button id="cl">Close</button></section>`;
+  d.querySelector("#cl").onclick=()=>d.close();
+  d.querySelectorAll("[data-ub]").forEach(b=>b.onclick=()=>run(async()=>{await api("pin",{branch:b.dataset.ub,path:b.dataset.up,pinned:false});$("#pinBtn").click()}));
+  d.querySelectorAll("[data-rb]").forEach(b=>b.onclick=()=>run(async()=>{const r=await api("restore_pins",{branch:b.dataset.br,id:b.dataset.rb});toast(`Restored ${r.restored.length} file(s) on ${b.dataset.br}`);await load(true)}));
+  if(!d.open)d.showModal()});
+$("#infoBtn").onclick=()=>run(async()=>{await load(true);showInfo()});
+function showInfo(){const i=S.info,l=i.last,d=$("#dlg");
+  d.innerHTML=`<section><h3>${esc(i.root)}</h3><div class="mu">On <b>${esc(i.branch||"(detached)")}</b> · origin: ${esc(i.remote_url||"none")}</div>
+   <p><button class="p" id="fe">Fetch origin</button> <button id="cl">Close</button></p><pre>${esc(i.status||"Working tree clean.")}</pre></section>
+  <section><h3>Last commit</h3>${l?`<b>${esc(l.subject)}</b><div class="mu">${esc(l.author)}, ${esc(l.ago)} (${esc(l.date)}) · ${esc(l.hash.slice(0,8))}</div><pre>${esc(l.stat)}</pre>`:"<span class=mu>No commits yet.</span>"}
+   <details><summary class="mu">Recent commits</summary><table>${i.log.map(c=>`<tr><td><code>${esc(c.hash)}</code></td><td>${esc(c.subject)}</td><td class="mu">${esc(c.author)}, ${esc(c.ago)}</td></tr>`).join("")}</table></details></section>
+  <section><h3>Stashes</h3>${i.stashes.length?`<table>${i.stashes.map(s=>`<tr><td><code>${esc(s.ref)}</code></td><td>${esc(s.msg)}</td><td class="mu">${esc(s.ago)}</td><td><button data-st="${esc(s.ref)}">Restore</button></td></tr>`).join("")}</table>`:"<span class=mu>No stashes.</span>"}</section>`;
+  d.querySelector("#cl").onclick=()=>d.close();
+  d.querySelector("#fe").onclick=()=>run(async()=>{toast("Fetching...");await api("fetch",{});toast("Fetched");await load(true);showInfo()});
+  d.querySelectorAll("[data-st]").forEach(b=>b.onclick=()=>run(async()=>{await api("stash/apply",{ref:b.dataset.st});toast("Stash restored");showInfo()}));
+  if(!d.open)d.showModal()}
+if($("#path").value)$("#open").click();
+</script></body></html>
